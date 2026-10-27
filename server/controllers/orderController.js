@@ -1,5 +1,5 @@
 const db = require("../config/db");
-
+const { createNotification } = require("../utils/notificationHelper");
 function createOrder(req, res) {
     const userId = req.user.userId;
 
@@ -463,7 +463,7 @@ function createOrder(req, res) {
                         if (
                             coupon.usage_limit !== null &&
                             Number(coupon.used_count) >=
-                                Number(coupon.usage_limit)
+                            Number(coupon.usage_limit)
                         ) {
                             return rollbackOrder(
                                 connection,
@@ -682,22 +682,24 @@ function cancelOrder(req, res) {
     const userId = req.user.userId;
     const orderId = req.params.orderId;
 
-    const sql = `
-        UPDATE orders
-        SET order_status = 'cancelled'
+    const getOrderSql = `
+        SELECT
+            id,
+            order_number
+        FROM orders
         WHERE id = ?
         AND user_id = ?
         AND order_status = 'placed'
     `;
 
     db.query(
-        sql,
+        getOrderSql,
         [orderId, userId],
-        (error, result) => {
-            if (error) {
+        (orderError, orders) => {
+            if (orderError) {
                 console.error(
-                    "Cancel order error:",
-                    error
+                    "Get order for cancellation error:",
+                    orderError
                 );
 
                 return res.status(500).json({
@@ -706,23 +708,63 @@ function cancelOrder(req, res) {
                 });
             }
 
-            if (result.affectedRows === 0) {
+            if (orders.length === 0) {
                 return res.status(400).json({
                     success: false,
-                    message:
-                        "Order cannot be cancelled"
+                    message: "Order cannot be cancelled"
                 });
             }
 
-            return res.json({
-                success: true,
-                message:
-                    "Order cancelled successfully"
-            });
+            const order = orders[0];
+
+            const updateSql = `
+                UPDATE orders
+                SET order_status = 'cancelled'
+                WHERE id = ?
+                AND user_id = ?
+                AND order_status = 'placed'
+            `;
+
+            db.query(
+                updateSql,
+                [orderId, userId],
+                async (error, result) => {
+                    if (error) {
+                        console.error(
+                            "Cancel order error:",
+                            error
+                        );
+
+                        return res.status(500).json({
+                            success: false,
+                            message: "Unable to cancel order"
+                        });
+                    }
+
+                    if (result.affectedRows === 0) {
+                        return res.status(400).json({
+                            success: false,
+                            message: "Order cannot be cancelled"
+                        });
+                    }
+
+                    // Create customer cancellation notification
+                    await createNotification(
+                        userId,
+                        "order_status",
+                        "Order Cancelled",
+                        `Your order ${order.order_number} has been cancelled.`
+                    );
+
+                    return res.json({
+                        success: true,
+                        message: "Order cancelled successfully"
+                    });
+                }
+            );
         }
     );
 }
-
 
 module.exports = {
     createOrder,
